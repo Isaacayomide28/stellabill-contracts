@@ -72,6 +72,7 @@ fn make_funded_usage_subscription(t: &TestEnv, merchant: &Address) -> u32 {
 
 
 
+
 // ── Validation tests ─────────────────────────────────────────────────────────
 
 #[test]
@@ -561,4 +562,225 @@ fn conservation_invariant_holds_for_split() {
         usage,
         "conservation: gross == net + all fees"
     );
+}
+
+// ── Adversarial coverage for get_treasury_split ──────────────────────────────
+
+#[test]
+fn get_treasury_split_returns_none_when_unset() {
+    let t = TestEnv::default();
+    assert!(t.client.get_treasury_split().is_none());
+}
+
+#[test]
+fn get_treasury_split_returns_single_entry_config() {
+    let t = TestEnv::default();
+    let b1 = Address::generate(&t.env);
+
+    let mut entries = Vec::new(&t.env);
+    entries.push_back(TreasurySplitEntry {
+        beneficiary: b1.clone(),
+        bps: 10_000,
+    });
+    t.client.set_treasury_split(&t.admin, &entries);
+
+    let config = t.client.get_treasury_split().unwrap();
+    assert_eq!(config.entries.len(), 1);
+    assert_eq!(config.entries.get(0).unwrap().beneficiary, b1);
+    assert_eq!(config.entries.get(0).unwrap().bps, 10_000);
+}
+
+#[test]
+fn get_treasury_split_preserves_entry_order() {
+    let t = TestEnv::default();
+    let b1 = Address::generate(&t.env);
+    let b2 = Address::generate(&t.env);
+    let b3 = Address::generate(&t.env);
+
+    let mut entries = Vec::new(&t.env);
+    entries.push_back(TreasurySplitEntry {
+        beneficiary: b1.clone(),
+        bps: 5_000,
+    });
+    entries.push_back(TreasurySplitEntry {
+        beneficiary: b2.clone(),
+        bps: 3_000,
+    });
+    entries.push_back(TreasurySplitEntry {
+        beneficiary: b3.clone(),
+        bps: 2_000,
+    });
+    t.client.set_treasury_split(&t.admin, &entries);
+
+    let config = t.client.get_treasury_split().unwrap();
+    assert_eq!(config.entries.len(), 3);
+    assert_eq!(config.entries.get(0).unwrap().beneficiary, b1);
+    assert_eq!(config.entries.get(1).unwrap().beneficiary, b2);
+    assert_eq!(config.entries.get(2).unwrap().beneficiary, b3);
+    assert_eq!(config.entries.get(0).unwrap().bps, 5_000);
+    assert_eq!(config.entries.get(1).unwrap().bps, 3_000);
+    assert_eq!(config.entries.get(2).unwrap().bps, 2_000);
+}
+
+#[test]
+fn get_treasury_split_unchanged_after_rejected_set() {
+    let t = TestEnv::default();
+    let b1 = Address::generate(&t.env);
+
+    let mut good = Vec::new(&t.env);
+    good.push_back(TreasurySplitEntry {
+        beneficiary: b1.clone(),
+        bps: 10_000,
+    });
+    t.client.set_treasury_split(&t.admin, &good);
+
+    let before = t.client.get_treasury_split().unwrap();
+    assert_eq!(before.entries.len(), 1);
+    assert_eq!(before.entries.get(0).unwrap().beneficiary, b1);
+    assert_eq!(before.entries.get(0).unwrap().bps, 10_000);
+
+    // Rejected: sum of bps != 10_000
+    let b2 = Address::generate(&t.env);
+    let mut bad = Vec::new(&t.env);
+    bad.push_back(TreasurySplitEntry {
+        beneficiary: b1.clone(),
+        bps: 6_000,
+    });
+    bad.push_back(TreasurySplitEntry {
+        beneficiary: b2.clone(),
+        bps: 3_999,
+    });
+    assert!(t.client.try_set_treasury_split(&t.admin, &bad).is_err());
+
+    let after = t.client.get_treasury_split().unwrap();
+    assert_eq!(after.entries.len(), 1);
+    assert_eq!(after.entries.get(0).unwrap().beneficiary, b1);
+    assert_eq!(after.entries.get(0).unwrap().bps, 10_000);
+}
+
+#[test]
+fn get_treasury_split_unchanged_after_rejected_non_admin_set() {
+    let t = TestEnv::default();
+    let b1 = Address::generate(&t.env);
+
+    let mut good = Vec::new(&t.env);
+    good.push_back(TreasurySplitEntry {
+        beneficiary: b1.clone(),
+        bps: 10_000,
+    });
+    t.client.set_treasury_split(&t.admin, &good);
+
+    let stranger = Address::generate(&t.env);
+    let b2 = Address::generate(&t.env);
+    let mut bad = Vec::new(&t.env);
+    bad.push_back(TreasurySplitEntry {
+        beneficiary: b2,
+        bps: 10_000,
+    });
+    assert!(t.client.try_set_treasury_split(&stranger, &bad).is_err());
+
+    let after = t.client.get_treasury_split().unwrap();
+    assert_eq!(after.entries.len(), 1);
+    assert_eq!(after.entries.get(0).unwrap().beneficiary, b1);
+    assert_eq!(after.entries.get(0).unwrap().bps, 10_000);
+}
+
+#[test]
+fn get_treasury_split_none_after_rejected_clear_non_admin() {
+    let t = TestEnv::default();
+    let b1 = Address::generate(&t.env);
+
+    let mut entries = Vec::new(&t.env);
+    entries.push_back(TreasurySplitEntry {
+        beneficiary: b1.clone(),
+        bps: 10_000,
+    });
+    t.client.set_treasury_split(&t.admin, &entries);
+    assert!(t.client.get_treasury_split().is_some());
+
+    let stranger = Address::generate(&t.env);
+    let result = t.client.try_clear_treasury_split(&stranger);
+    assert!(result.is_err());
+
+    let after = t.client.get_treasury_split().unwrap();
+    assert_eq!(after.entries.len(), 1);
+    assert_eq!(after.entries.get(0).unwrap().beneficiary, b1);
+    assert_eq!(after.entries.get(0).unwrap().bps, 10_000);
+}
+
+#[test]
+fn get_treasury_split_is_none_after_admin_clear() {
+    let t = TestEnv::default();
+    let b1 = Address::generate(&t.env);
+
+    let mut entries = Vec::new(&t.env);
+    entries.push_back(TreasurySplitEntry {
+        beneficiary: b1,
+        bps: 10_000,
+    });
+    t.client.set_treasury_split(&t.admin, &entries);
+    assert!(t.client.get_treasury_split().is_some());
+
+    t.client.clear_treasury_split(&t.admin);
+    assert!(t.client.get_treasury_split().is_none());
+}
+
+#[test]
+fn get_treasury_split_reflects_latest_overwrite() {
+    let t = TestEnv::default();
+    let b1 = Address::generate(&t.env);
+    let b2 = Address::generate(&t.env);
+
+    let mut first = Vec::new(&t.env);
+    first.push_back(TreasurySplitEntry {
+        beneficiary: b1,
+        bps: 10_000,
+    });
+    t.client.set_treasury_split(&t.admin, &first);
+
+    let mut second = Vec::new(&t.env);
+    second.push_back(TreasurySplitEntry {
+        beneficiary: b2.clone(),
+        bps: 6_000,
+    });
+    second.push_back(TreasurySplitEntry {
+        beneficiary: Address::generate(&t.env),
+        bps: 4_000,
+    });
+    t.client.set_treasury_split(&t.admin, &second);
+
+    let config = t.client.get_treasury_split().unwrap();
+    assert_eq!(config.entries.len(), 2);
+    assert_eq!(config.entries.get(0).unwrap().beneficiary, b2);
+    assert_eq!(config.entries.get(0).unwrap().bps, 6_000);
+    assert_eq!(config.entries.get(1).unwrap().bps, 4_000);
+}
+
+#[test]
+fn get_treasury_split_does_not_mutate_state() {
+    let t = TestEnv::default();
+    let b1 = Address::generate(&t.env);
+    let b2 = Address::generate(&t.env);
+
+    let mut entries = Vec::new(&t.env);
+    entries.push_back(TreasurySplitEntry {
+        beneficiary: b1.clone(),
+        bps: 7_000,
+    });
+    entries.push_back(TreasurySplitEntry {
+        beneficiary: b2.clone(),
+        bps: 3_000,
+    });
+    t.client.set_treasury_split(&t.admin, &entries);
+
+    let first = t.client.get_treasury_split().unwrap();
+    let second = t.client.get_treasury_split().unwrap();
+    let third = t.client.get_treasury_split().unwrap();
+
+    assert_eq!(first.entries.len(), second.entries.len());
+    assert_eq!(second.entries.len(), third.entries.len());
+    assert_eq!(first.entries.get(0).unwrap().beneficiary, b1);
+    assert_eq!(first.entries.get(1).unwrap().beneficiary, b2);
+    assert_eq!(third.entries.get(0).unwrap().bps, 7_000);
+    assert_eq!(third.entries.get(1).unwrap().bps, 3_000);
 }
